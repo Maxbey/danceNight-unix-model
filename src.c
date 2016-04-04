@@ -2,9 +2,17 @@
 #include <stdlib.h>
 #include <string.h>
 #include <stdio.h>
+#include <time.h>
+
+#define KRED  "\x1B[31m"
+#define KGRN  "\x1B[32m"
+#define KYELL  "\x1b[33m"
+#define KNRM  "\x1B[0m"
 
 pthread_mutex_t output_mutex;
 pthread_mutex_t partner_choose_mutex;
+pthread_cond_t next_stage;
+pthread_mutex_t stage_mutex;
 
 typedef struct config_t Config;
 typedef struct dancer_t Dancer;
@@ -34,12 +42,26 @@ Config app_config;
 Dancer *guys_array;
 Dancer *girls_array;
 
+int pairs_cnt = 0;
+
 void guy_init(Dancer *guy, char name){
   guy->name = name;
 }
 
 void girl_init(Dancer *girl, char name){
   girl->name = name;
+}
+
+void changeDancerColor(Dancer *dancer, char *color){
+  pthread_mutex_lock(&output_mutex);
+
+  printf("\033[%d;%dH", dancer->position.y, dancer->position.x);
+  printf("%s", color);
+  printf("%c", dancer->name);
+  printf("%s", KNRM);
+
+  fflush(stdout);
+  pthread_mutex_unlock(&output_mutex);
 }
 
 void displayDancer(Dancer *dancer){
@@ -58,6 +80,7 @@ void hideDancer(Dancer *dancer){
   printf("\033[%d;%dH", dancer->position.y, dancer->position.x);
   printf("%c", ' ');
 
+  fflush(stdout);
   pthread_mutex_unlock(&output_mutex);
 }
 
@@ -66,8 +89,16 @@ void move(Dancer *dancer, Position moveTo, int delay){
   {
     hideDancer(dancer);
 
-    (moveTo.y >= dancer->position.y) ? dancer->position.y++ : dancer->position.y--;
-    (moveTo.x >= dancer->position.x) ? dancer->position.x++ : dancer->position.x--;
+    if(moveTo.y != dancer->position.y)
+    {
+        (moveTo.y > dancer->position.y) ? dancer->position.y++ : dancer->position.y--;
+    }
+
+    if(moveTo.x != dancer->position.x)
+    {
+        (moveTo.x > dancer->position.x) ? dancer->position.x++ : dancer->position.x--;
+    }
+
     displayDancer(dancer);
     usleep(delay);
 
@@ -86,19 +117,32 @@ int free_girls_count(){
   return free_cnt;
 }
 
-Dancer *get_free_girls()
+Dancer **get_free_girls()
 {
-  Dancer *girls;
-  girls = (Dancer*)malloc(free_girls_count() * sizeof(Dancer));
+  Dancer **girls;
+  girls = (Dancer**)malloc(free_girls_count() * sizeof(Dancer*));
 
   for(int i = 0, p = 0; i < app_config.girls_cnt; i++){
     if(girls_array[i].partner == NULL){
-      girls[p] = girls_array[i];
+      girls[p] = &girls_array[i];
       p++;
     }
   }
 
   return girls;
+}
+
+int bind_partners(Dancer *guy, Dancer *girl){
+  srand(time(NULL));
+  int random = rand() % 100;
+
+  if(random <= 30)
+    return 0;
+
+  guy->partner = girl;
+  girl->partner = guy;
+
+  return 1;
 }
 
 void guy_behavior(void *args){
@@ -116,22 +160,47 @@ void guy_behavior(void *args){
   move(guy, pos, 200000);
 
   pthread_mutex_lock(&partner_choose_mutex);
+  int free_cnt = free_girls_count();
 
-  printf("\033[%d;%dH", guy->position.y, guy->position.x);
-  get_success_alert("%c", guy->name);
-  usleep(2000000);
+  if(free_cnt)
+  {
+    changeDancerColor(guy, KGRN);
+    usleep(1000000);
+
+    Dancer **girls = get_free_girls();
+
+    for(int i = 0; 1; i++){
+      if(i == free_cnt)
+        i = 0;
+
+      if(bind_partners(guy, girls[i])){
+        pairs_cnt++;
+        changeDancerColor(girls[i], KGRN);
+        usleep(100000);
+        changeDancerColor(girls[i], KNRM);
+        break;
+      }
+
+      changeDancerColor(girls[i], KRED);
+      usleep(100000);
+      changeDancerColor(girls[i], KNRM);
+    }
+  }
+
+  changeDancerColor(guy, KNRM);
   pthread_mutex_unlock(&partner_choose_mutex);
 
-  Dancer *girls = get_free_girls();
+  if(pairs_cnt == app_config.girls_cnt)
+    pthread_cond_broadcast(&next_stage);
 
-  printf("\033[%d;%dH", girls[0].position.y, girls[1].position.x);
-  get_warning_alert("%c", girls[0].name);
-  girls[0].partner = guy;
+  pthread_cond_wait(&next_stage, &stage_mutex);
 
-  usleep(2000000);
-  pthread_mutex_unlock(&partner_choose_mutex);
+  if(guy->partner == NULL){
+    pos.y = 25;
+    move(guy, pos, 100000);
+  }
 
-
+  pthread_mutex_unlock(&stage_mutex);
 }
 
 void girl_behavior(void *args){
@@ -147,6 +216,14 @@ void girl_behavior(void *args){
   pos.x = girl->position.x = girl->id * 10;
 
   move(girl, pos, 200000);
+
+  pthread_cond_wait(&next_stage, &stage_mutex);
+
+  pos.x = girl->partner->position.x;
+
+  move(girl, pos, 200000);
+
+  pthread_mutex_unlock(&stage_mutex);
 }
 
 void app_boot(Config config, Dancer *guys_array, Dancer *girls_array){
@@ -161,6 +238,8 @@ void main(){
 
   pthread_mutex_init(&output_mutex, NULL);
   pthread_mutex_init(&partner_choose_mutex, NULL);
+  pthread_mutex_init(&stage_mutex, NULL);
+  pthread_cond_init(&next_stage, NULL);
 
   char guys_dictionary[15] = "ABCDEFGHIJKLMNO";
   char girls_dictionary[15] = "abcdefghijklmno";
