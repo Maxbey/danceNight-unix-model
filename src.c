@@ -14,6 +14,8 @@ pthread_mutex_t partner_choose_mutex;
 pthread_cond_t next_stage;
 pthread_mutex_t stage_mutex;
 
+pthread_t render;
+
 typedef struct config_t Config;
 typedef struct dancer_t Dancer;
 typedef struct position_t Position;
@@ -30,9 +32,12 @@ struct position_t {
 };
 
 struct dancer_t {
+  pthread_t thread;
+
   int id;
   char name;
-  pthread_t thread;
+  char color[255];
+
   Position position;
   Dancer *partner;
 };
@@ -44,6 +49,35 @@ Dancer *girls_array;
 
 int pairs_cnt = 0;
 
+void displayDancer(Dancer *dancer){
+  pthread_mutex_lock(&output_mutex);
+
+  printf("%s", dancer->color);
+  printf("\033[%d;%dH", dancer->position.y, dancer->position.x);
+  printf("%c", dancer->name);
+  fflush(stdout);
+
+  pthread_mutex_unlock(&output_mutex);
+}
+
+void render_thread(void *args){
+  int i;
+
+  while(1)
+  {
+    printf("\033[2J\n");
+    for(i = 0; i < app_config.guys_cnt; i++){
+      displayDancer(&guys_array[i]);
+    }
+
+    for(i = 0; i < app_config.girls_cnt; i++){
+      displayDancer(&girls_array[i]);
+    }
+    usleep(50000);
+  }
+
+}
+
 void guy_init(Dancer *guy, char name){
   guy->name = name;
 }
@@ -52,43 +86,14 @@ void girl_init(Dancer *girl, char name){
   girl->name = name;
 }
 
-void changeDancerColor(Dancer *dancer, char *color){
-  pthread_mutex_lock(&output_mutex);
-
-  printf("\033[%d;%dH", dancer->position.y, dancer->position.x);
-  printf("%s", color);
-  printf("%c", dancer->name);
-  printf("%s", KNRM);
-
-  fflush(stdout);
-  pthread_mutex_unlock(&output_mutex);
+void setDancerColor(Dancer *dancer, char *color){
+  strcpy(dancer->color, color);
 }
 
-void displayDancer(Dancer *dancer){
-  pthread_mutex_lock(&output_mutex);
-
-  printf("\033[%d;%dH", dancer->position.y, dancer->position.x);
-  printf("%c", dancer->name);
-
-  fflush(stdout);
-  pthread_mutex_unlock(&output_mutex);
-}
-
-void hideDancer(Dancer *dancer){
-  pthread_mutex_lock(&output_mutex);
-
-  printf("\033[%d;%dH", dancer->position.y, dancer->position.x);
-  printf("%c", ' ');
-
-  fflush(stdout);
-  pthread_mutex_unlock(&output_mutex);
-}
 
 void move(Dancer *dancer, Position moveTo, int delay){
   do
   {
-    hideDancer(dancer);
-
     if(moveTo.y != dancer->position.y)
     {
         (moveTo.y > dancer->position.y) ? dancer->position.y++ : dancer->position.y--;
@@ -99,9 +104,7 @@ void move(Dancer *dancer, Position moveTo, int delay){
         (moveTo.x > dancer->position.x) ? dancer->position.x++ : dancer->position.x--;
     }
 
-    displayDancer(dancer);
     usleep(delay);
-
   }
   while(dancer->position.y != moveTo.y || dancer->position.x != moveTo.x);
 }
@@ -149,13 +152,12 @@ void guy_behavior(void *args){
   Dancer *guy = args;
 
   guy->position.y = 0;
-  guy->position.x = guy->id * 7;
-
-  displayDancer(guy);
+  guy->position.x = guy->id * 8;
+  setDancerColor(guy, KNRM);
 
   Position pos;
   pos.y = 20;
-  pos.x = guy->id * 7;
+  pos.x = guy->id * 8;
 
   move(guy, pos, 200000);
 
@@ -164,7 +166,7 @@ void guy_behavior(void *args){
 
   if(free_cnt)
   {
-    changeDancerColor(guy, KGRN);
+    setDancerColor(guy, KGRN);
     usleep(1000000);
 
     Dancer **girls = get_free_girls();
@@ -175,19 +177,21 @@ void guy_behavior(void *args){
 
       if(bind_partners(guy, girls[i])){
         pairs_cnt++;
-        changeDancerColor(girls[i], KGRN);
-        usleep(100000);
-        changeDancerColor(girls[i], KNRM);
+        setDancerColor(girls[i], KGRN);
+        usleep(1000000);
+        setDancerColor(girls[i], KNRM);
         break;
       }
+      else{
+        setDancerColor(girls[i], KRED);
+      }
 
-      changeDancerColor(girls[i], KRED);
-      usleep(100000);
-      changeDancerColor(girls[i], KNRM);
+      usleep(1000000);
+      setDancerColor(girls[i], KNRM);
     }
   }
 
-  changeDancerColor(guy, KNRM);
+  setDancerColor(guy, KNRM);
   pthread_mutex_unlock(&partner_choose_mutex);
 
   if(pairs_cnt == app_config.girls_cnt)
@@ -199,6 +203,10 @@ void guy_behavior(void *args){
     pos.y = 25;
     move(guy, pos, 100000);
   }
+  else{
+    pos.y = 14;
+    move(guy, pos, 100000);
+  }
 
   pthread_mutex_unlock(&stage_mutex);
 }
@@ -207,33 +215,29 @@ void girl_behavior(void *args){
   Dancer *girl = args;
 
   girl->position.y = 20;
-  girl->position.x = girl->id * 10;
-
-  displayDancer(girl);
+  girl->position.x = girl->id * 12;
+  setDancerColor(girl, KNRM);
 
   Position pos;
   pos.y = 0;
-  pos.x = girl->position.x = girl->id * 10;
+  pos.x = girl->position.x = girl->id * 12;
 
   move(girl, pos, 200000);
 
   pthread_cond_wait(&next_stage, &stage_mutex);
 
   pos.x = girl->partner->position.x;
+  pos.y = 12;
 
   move(girl, pos, 200000);
 
   pthread_mutex_unlock(&stage_mutex);
 }
 
-void app_boot(Config config, Dancer *guys_array, Dancer *girls_array){
-  //To refactor
-}
-
 void main(){
 
   app_config.guys_cnt = 10;
-  app_config.girls_cnt = 7;
+  app_config.girls_cnt = 5;
   app_config.dances_cnt = 5;
 
   pthread_mutex_init(&output_mutex, NULL);
@@ -263,7 +267,7 @@ void main(){
     pthread_create(&girls_array[i].thread, NULL, (void *) girl_behavior, (void *) &girls_array[i]);
   }
 
-  printf("\033[2J\n");
+  pthread_create(&render, NULL, (void *) render_thread, (void *) 0);
 
   getchar();
 }
