@@ -1,0 +1,3 @@
+#define INPUT_HANDLE 0
+#define OUTPUT_HANDLE 1
+#define ERROR_HANDLE 2
