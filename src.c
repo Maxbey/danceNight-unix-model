@@ -3,6 +3,7 @@
 #include <string.h>
 #include <stdio.h>
 #include <time.h>
+#include <semaphore.h>
 
 #define KRED  "\x1B[31m"
 #define KGRN  "\x1B[32m"
@@ -12,14 +13,7 @@
 pthread_mutex_t output_mutex;
 pthread_mutex_t partner_choose_mutex;
 
-pthread_cond_t next_stage;
-pthread_mutex_t stage_mutex;
-
-pthread_cond_t event;
-pthread_mutex_t event_mutex;
-
-pthread_cond_t fuck;
-pthread_mutex_t fuck_mutex;
+sem_t sem;
 
 pthread_t render;
 
@@ -210,7 +204,7 @@ void guy_behavior(void *args){
   pos.y = 20;
   pos.x = guy->id * 8;
 
-  move(guy, pos, 200000);
+  move(guy, pos, 100000);
 
   pthread_mutex_lock(&partner_choose_mutex);
   int free_cnt = free_girls_count();
@@ -245,8 +239,7 @@ void guy_behavior(void *args){
   setDancerColor(guy, KNRM);
   pthread_mutex_unlock(&partner_choose_mutex);
 
-  pthread_cond_wait(&next_stage, &stage_mutex);
-  pthread_mutex_unlock(&stage_mutex);
+  sem_wait(&sem);
 
   if(guy->partner == NULL){
     pos.y = 25;
@@ -259,14 +252,13 @@ void guy_behavior(void *args){
 
   ready_for_dance++;
 
-  pthread_cond_wait(&event, &event_mutex);
-  pthread_mutex_unlock(&event_mutex);
+  sem_wait(&sem);
+
   move(guy, guy->dance_position, 100000);
 
   lets_dance++;
 
-  pthread_cond_wait(&fuck, &fuck_mutex);
-  pthread_mutex_unlock(&fuck_mutex);
+  sem_wait(&sem);
 
   pos.y = guy->position.y;
   pos.x = guy->position.x + 2;
@@ -319,19 +311,17 @@ void girl_behavior(void *args){
   pos.y = 0;
   pos.x = girl->position.x = girl->id * 9;
 
-  move(girl, pos, 200000);
+  move(girl, pos, 100000);
 
-  pthread_cond_wait(&next_stage, &stage_mutex);
-  pthread_mutex_unlock(&stage_mutex);
+  sem_wait(&sem);
 
   pos.x = girl->partner->position.x;
   pos.y = 12;
 
-  move(girl, pos, 200000);
+  move(girl, pos, 100000);
   ready_for_dance++;
 
-  pthread_cond_wait(&event, &event_mutex);
-  pthread_mutex_unlock(&event_mutex);
+  sem_wait(&sem);
 
   move(girl, girl->dance_position, 100000);
 
@@ -346,14 +336,8 @@ void main(){
 
   pthread_mutex_init(&output_mutex, NULL);
   pthread_mutex_init(&partner_choose_mutex, NULL);
-  pthread_mutex_init(&stage_mutex, NULL);
-  pthread_cond_init(&next_stage, NULL);
 
-  pthread_mutex_init(&event_mutex, NULL);
-  pthread_cond_init(&event, NULL);
-
-  pthread_mutex_init(&fuck_mutex, NULL);
-  pthread_cond_init(&fuck, NULL);
+  sem_init(&sem, 0, 0);
 
   char guys_dictionary[15] = "ABCDEFGHIJKLMNO";
   char girls_dictionary[15] = "abcdefghijklmno";
@@ -382,19 +366,21 @@ void main(){
   while(1){
     if(pairs_cnt == app_config.girls_cnt){
       calc_dance_positions();
-      pthread_cond_broadcast(&next_stage);
+      pairs_cnt == 0;
+      sem_post(&sem);
     }
 
     if(ready_for_dance == app_config.girls_cnt * 2)
     {
-      pthread_cond_broadcast(&event);
       ready_for_dance = 0;
+      sem_post(&sem);
+
     }
 
     if(lets_dance == app_config.girls_cnt * 2)
     {
-      pthread_cond_broadcast(&fuck);
       lets_dance = 0;
+      sem_post(&sem);
     }
 
 
