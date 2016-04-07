@@ -3,7 +3,39 @@
 #include <string.h>
 #include <stdio.h>
 #include <time.h>
-#include <semaphore.h>
+#include <stdbool.h>
+
+typedef struct mrevent {
+    pthread_mutex_t mutex;
+    pthread_cond_t cond;
+    bool triggered;
+} Event;
+
+void mrevent_init(struct mrevent *ev) {
+    pthread_mutex_init(&ev->mutex, 0);
+    pthread_cond_init(&ev->cond, 0);
+    ev->triggered = false;
+}
+
+void mrevent_trigger(struct mrevent *ev) {
+    pthread_mutex_lock(&ev->mutex);
+    ev->triggered = true;
+    pthread_cond_broadcast(&ev->cond);
+    pthread_mutex_unlock(&ev->mutex);
+}
+
+void mrevent_reset(struct mrevent *ev) {
+    pthread_mutex_lock(&ev->mutex);
+    ev->triggered = false;
+    pthread_mutex_unlock(&ev->mutex);
+}
+
+void mrevent_wait(struct mrevent *ev) {
+     pthread_mutex_lock(&ev->mutex);
+     while (!ev->triggered)
+         pthread_cond_wait(&ev->cond, &ev->mutex);
+     pthread_mutex_unlock(&ev->mutex);
+}
 
 #define KRED  "\x1B[31m"
 #define KGRN  "\x1B[32m"
@@ -13,7 +45,9 @@
 pthread_mutex_t output_mutex;
 pthread_mutex_t partner_choose_mutex;
 
-sem_t sem;
+Event event_1;
+Event event_2;
+Event event_3;
 
 pthread_t render;
 
@@ -51,8 +85,9 @@ Dancer *guys_array;
 Dancer *girls_array;
 
 int pairs_cnt = 0;
-int ready_for_dance = 0;
-int lets_dance = 0;
+int on_dance_position = 0;
+int dance_part_1 = 0;
+int dance_part_2 = 0;
 
 void displayDancer(Dancer *dancer){
   pthread_mutex_lock(&output_mutex);
@@ -193,6 +228,36 @@ int bind_partners(Dancer *guy, Dancer *girl){
   return 1;
 }
 
+void dance_around_partner(Dancer *dancer, int direction)
+{
+  Position pos;
+
+  pos.y = dancer->position.y + (4 * direction);
+  pos.x = dancer->position.x;
+
+  move(dancer, pos, 100000);
+
+  pos.y = dancer->position.y;
+  pos.x = dancer->position.x - (8 * direction);
+
+  move(dancer, pos, 100000);
+
+  pos.y = dancer->position.y - (8 * direction);
+  pos.x = dancer->position.x;
+
+  move(dancer, pos, 100000);
+
+  pos.y = dancer->position.y;
+  pos.x = dancer->position.x + (8 * direction);
+
+  move(dancer, pos, 100000);
+
+  pos.y = dancer->position.y + (4 * direction);
+  pos.x = dancer->position.x;
+
+  move(dancer, pos, 100000);
+}
+
 void guy_behavior(void *args){
   Dancer *guy = args;
 
@@ -239,7 +304,7 @@ void guy_behavior(void *args){
   setDancerColor(guy, KNRM);
   pthread_mutex_unlock(&partner_choose_mutex);
 
-  sem_wait(&sem);
+  mrevent_wait(&event_1);
 
   if(guy->partner == NULL){
     pos.y = 25;
@@ -250,52 +315,29 @@ void guy_behavior(void *args){
     move(guy, pos, 100000);
   }
 
-  ready_for_dance++;
+  on_dance_position++;
 
-  sem_wait(&sem);
+  mrevent_wait(&event_2);
 
   move(guy, guy->dance_position, 100000);
 
-  lets_dance++;
+  dance_part_1++;
 
-  sem_wait(&sem);
+  mrevent_wait(&event_3);
 
   pos.y = guy->position.y;
   pos.x = guy->position.x + 2;
 
   move(guy, pos, 100000);
 
-  for(int i = 0; i < 6; i++)
-  {
-    pos.y = guy->position.y + 4;
-    pos.x = guy->position.x;
+  dance_around_partner(guy, 1);
 
-    move(guy, pos, 100000);
+  pos.y = guy->position.y;
+  pos.x = guy->partner->position.x;
 
-    pos.y = guy->position.y;
-    pos.x = guy->position.x - 8;
+  move(guy, pos, 100000);
 
-    move(guy, pos, 100000);
-
-    pos.y = guy->position.y - 8;
-    pos.x = guy->position.x;
-
-    move(guy, pos, 100000);
-
-    pos.y = guy->position.y;
-    pos.x = guy->position.x + 8;
-
-    move(guy, pos, 100000);
-
-    pos.y = guy->position.y + 4;
-    pos.x = guy->position.x;
-
-    move(guy, pos, 100000);
-  }
-
-
-
-
+  dance_part_2++;
 
 
 }
@@ -313,31 +355,41 @@ void girl_behavior(void *args){
 
   move(girl, pos, 100000);
 
-  sem_wait(&sem);
+  mrevent_wait(&event_1);
 
   pos.x = girl->partner->position.x;
   pos.y = 12;
 
   move(girl, pos, 100000);
-  ready_for_dance++;
+  on_dance_position++;
 
-  sem_wait(&sem);
+  mrevent_wait(&event_2);
 
   move(girl, girl->dance_position, 100000);
 
-  lets_dance++;
+  dance_part_1++;
+
+  mrevent_wait(&event_1);
+
+  pos.y = girl->position.y;
+  pos.x = girl->position.x + 2;
+
+  move(girl, pos, 100000);
+
 }
 
 void main(){
 
-  app_config.guys_cnt = 10;
-  app_config.girls_cnt = 10;
+  app_config.guys_cnt = 6;
+  app_config.girls_cnt = 6;
   app_config.dances_cnt = 5;
 
   pthread_mutex_init(&output_mutex, NULL);
   pthread_mutex_init(&partner_choose_mutex, NULL);
 
-  sem_init(&sem, 0, 0);
+  mrevent_init(&event_1);
+  mrevent_init(&event_2);
+  mrevent_init(&event_3);
 
   char guys_dictionary[15] = "ABCDEFGHIJKLMNO";
   char girls_dictionary[15] = "abcdefghijklmno";
@@ -367,20 +419,30 @@ void main(){
     if(pairs_cnt == app_config.girls_cnt){
       calc_dance_positions();
       pairs_cnt == 0;
-      sem_post(&sem);
+      mrevent_trigger(&event_1);
     }
 
-    if(ready_for_dance == app_config.girls_cnt * 2)
+    if(on_dance_position == app_config.girls_cnt * 2)
     {
-      ready_for_dance = 0;
-      sem_post(&sem);
+      on_dance_position = 0;
+      mrevent_reset(&event_1);
+      mrevent_trigger(&event_2);
 
     }
 
-    if(lets_dance == app_config.girls_cnt * 2)
+    if(dance_part_1 == app_config.girls_cnt * 2)
     {
-      lets_dance = 0;
-      sem_post(&sem);
+      dance_part_1 = 0;
+      mrevent_reset(&event_2);
+      mrevent_trigger(&event_3);
+    }
+
+    if(dance_part_2 == app_config.guys_cnt)
+    {
+      mrevent_reset(&event_1);
+      dance_part_2 = 0;
+      mrevent_trigger(&event_1);
+
     }
 
 
