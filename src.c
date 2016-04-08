@@ -69,11 +69,11 @@ struct position_t {
 struct dancer_t {
   pthread_t thread;
 
-  int id;
   char name;
   char color[255];
 
   Position position;
+  Position stand_position;
   Position dance_position;
 
   Dancer *partner;
@@ -88,6 +88,7 @@ int pairs_cnt = 0;
 int on_dance_position = 0;
 int dance_part_1 = 0;
 int dance_part_2 = 0;
+int end_of_dance = 0;
 
 void displayDancer(Dancer *dancer){
   pthread_mutex_lock(&output_mutex);
@@ -118,18 +119,15 @@ void render_thread(void *args){
 
 }
 
-void guy_init(Dancer *guy, char name){
-  guy->name = name;
-}
-
-void girl_init(Dancer *girl, char name){
-  girl->name = name;
-}
-
 void setDancerColor(Dancer *dancer, char *color){
   strcpy(dancer->color, color);
 }
 
+void init_dancer(Dancer *dancer, char name){
+  dancer->name = name;
+  dancer->partner = NULL;
+  setDancerColor(dancer, KNRM);
+}
 
 void move(Dancer *dancer, Position moveTo, int delay){
   do
@@ -149,6 +147,7 @@ void move(Dancer *dancer, Position moveTo, int delay){
   while(dancer->position.y != moveTo.y || dancer->position.x != moveTo.x);
 }
 
+// Calculate and set optimal dance positions for dancers
 void calc_dance_positions(){
   int rows_cnt = 1;
   int horizontal_margin;
@@ -173,20 +172,38 @@ void calc_dance_positions(){
 
     for(int j = (4 * row) - 4, step = 0; j < 4 * row && j < app_config.girls_cnt; j++)
     {
-      Position girl_pos;
-      girl_pos.y = vertical_margin * row;
+      Pos girl_pos;
+      girls_array[j].dance_position.y = vertical_margin * row;
       step += horizontal_margin;
-      girl_pos.x = step - 1;
+      girls_array[j].dance_position.x = step - 1;
 
-      girls_array[j].dance_position = girl_pos;
-
-      Position guy_pos;
-      guy_pos.y = girl_pos.y;
-      guy_pos.x = girl_pos.x + 2;
-
-      girls_array[j].partner->dance_position = guy_pos;
+      girls_array[j].partner->dance_position.y = girls_array[j].dance_position.y;
+      girls_array[j].partner->dance_position.x = girls_array[j].dance_position.x + 2;
     }
   }
+}
+
+// Calculate and set optimal stand positions for dancers
+void calc_stand_positions()
+{
+  int i, step;
+  int guys_margin = 80 / app_config.guys_cnt + 1;
+  int girls_margin = 80 / app_config.girls_cnt + 1;
+
+  for(i = 0, step = 0; i < app_config.guys_cnt; i++)
+  {
+    guys_array[i].stand_position.y = 16;
+    step += guys_margin;
+    guys_array[i].stand_position.x = step;
+  }
+
+  for(i = 0, step = 0; i < app_config.girls_cnt; i++)
+  {
+    girls_array[i].stand_position.y = 8;
+    step += girls_margin;
+    girls_array[i].stand_position.x = step;
+  }
+
 }
 
 int free_girls_count(){
@@ -238,7 +255,7 @@ void dance_around_partner(Dancer *dancer, int direction)
   move(dancer, pos, 100000);
 
   pos.y = dancer->position.y;
-  pos.x = dancer->position.x - (8 * direction);
+  pos.x = dancer->position.x - 8;
 
   move(dancer, pos, 100000);
 
@@ -248,7 +265,7 @@ void dance_around_partner(Dancer *dancer, int direction)
   move(dancer, pos, 100000);
 
   pos.y = dancer->position.y;
-  pos.x = dancer->position.x + (8 * direction);
+  pos.x = dancer->position.x + 8;
 
   move(dancer, pos, 100000);
 
@@ -259,17 +276,10 @@ void dance_around_partner(Dancer *dancer, int direction)
 }
 
 void guy_behavior(void *args){
+  Position pos;
   Dancer *guy = args;
 
-  guy->position.y = 0;
-  guy->position.x = guy->id * 8;
-  setDancerColor(guy, KNRM);
-
-  Position pos;
-  pos.y = 20;
-  pos.x = guy->id * 8;
-
-  move(guy, pos, 100000);
+  guy->position = guy->stand_position;
 
   pthread_mutex_lock(&partner_choose_mutex);
   int free_cnt = free_girls_count();
@@ -332,28 +342,18 @@ void guy_behavior(void *args){
 
   dance_around_partner(guy, 1);
 
-  pos.y = guy->position.y;
-  pos.x = guy->partner->position.x;
-
-  move(guy, pos, 100000);
-
   dance_part_2++;
 
+  mrevent_wait(&event_2);
 
+  move(guy, guy->stand_position, 100000);
 }
 
 void girl_behavior(void *args){
+  Position pos;
   Dancer *girl = args;
 
-  girl->position.y = 20;
-  girl->position.x = girl->id * 9;
-  setDancerColor(girl, KNRM);
-
-  Position pos;
-  pos.y = 0;
-  pos.x = girl->position.x = girl->id * 9;
-
-  move(girl, pos, 100000);
+  girl->position = girl->stand_position;
 
   mrevent_wait(&event_1);
 
@@ -372,16 +372,33 @@ void girl_behavior(void *args){
   mrevent_wait(&event_1);
 
   pos.y = girl->position.y;
-  pos.x = girl->position.x + 2;
+  pos.x = girl->partner->position.x + 3;
 
   move(girl, pos, 100000);
 
+  dance_around_partner(girl, -1);
+
+  end_of_dance++;
+
+  mrevent_wait(&event_2);
+  move(girl, girl->stand_position, 100000);
+}
+
+void run_dancers_threads()
+{
+  for(int i = 0; i < app_config.guys_cnt; i++){
+    pthread_create(&guys_array[i].thread, NULL, (void *) guy_behavior, (void *) &guys_array[i]);
+  }
+
+  for(int i = 0; i < app_config.girls_cnt; i++){
+    pthread_create(&girls_array[i].thread, NULL, (void *) girl_behavior, (void *) &girls_array[i]);
+  }
 }
 
 void main(){
 
-  app_config.guys_cnt = 6;
-  app_config.girls_cnt = 6;
+  app_config.guys_cnt = 12;
+  app_config.girls_cnt = 12;
   app_config.dances_cnt = 5;
 
   pthread_mutex_init(&output_mutex, NULL);
@@ -398,27 +415,25 @@ void main(){
   girls_array = (Dancer*)malloc(app_config.girls_cnt * sizeof(Dancer));
 
   for(int i = 0; i < app_config.guys_cnt; i++){
-    guys_array[i].id = i + 1;
-    guy_init(&guys_array[i], guys_dictionary[i]);
-    guys_array[i].partner = NULL;
-
-    pthread_create(&guys_array[i].thread, NULL, (void *) guy_behavior, (void *) &guys_array[i]);
+    init_dancer(&guys_array[i], guys_dictionary[i]);
   }
 
   for(int i = 0; i < app_config.girls_cnt; i++){
-    girls_array[i].id = i + 1;
-    girl_init(&girls_array[i], girls_dictionary[i]);
-    girls_array[i].partner = NULL;
-
-    pthread_create(&girls_array[i].thread, NULL, (void *) girl_behavior, (void *) &girls_array[i]);
+    init_dancer(&girls_array[i], girls_dictionary[i]);
   }
 
+  //Calculate and set optimal stand positions for dancers
+  calc_stand_positions();
+
+  run_dancers_threads();
+
+  // Run render thread
   pthread_create(&render, NULL, (void *) render_thread, (void *) 0);
 
   while(1){
     if(pairs_cnt == app_config.girls_cnt){
       calc_dance_positions();
-      pairs_cnt == 0;
+      pairs_cnt = 0;
       mrevent_trigger(&event_1);
     }
 
@@ -427,7 +442,6 @@ void main(){
       on_dance_position = 0;
       mrevent_reset(&event_1);
       mrevent_trigger(&event_2);
-
     }
 
     if(dance_part_1 == app_config.girls_cnt * 2)
@@ -439,12 +453,17 @@ void main(){
 
     if(dance_part_2 == app_config.guys_cnt)
     {
-      mrevent_reset(&event_1);
       dance_part_2 = 0;
+      mrevent_reset(&event_3);
       mrevent_trigger(&event_1);
-
     }
 
+    if(end_of_dance == app_config.girls_cnt)
+    {
+      end_of_dance = 0;
+      mrevent_trigger(&event_2);
+      mrevent_reset(&event_1);
+    }
 
     usleep(1000000);
   }
