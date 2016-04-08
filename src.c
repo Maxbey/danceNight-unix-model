@@ -32,9 +32,14 @@ void mrevent_reset(struct mrevent *ev) {
 
 void mrevent_wait(struct mrevent *ev) {
      pthread_mutex_lock(&ev->mutex);
-     while (!ev->triggered)
+     if (!ev->triggered)
          pthread_cond_wait(&ev->cond, &ev->mutex);
      pthread_mutex_unlock(&ev->mutex);
+}
+
+void mrevent_destroy(struct mrevent *ev){
+  pthread_mutex_destroy(&ev->mutex);
+  pthread_cond_destroy(&ev->cond);
 }
 
 #define KRED  "\x1B[31m"
@@ -48,6 +53,7 @@ pthread_mutex_t partner_choose_mutex;
 Event event_1;
 Event event_2;
 Event event_3;
+Event event_4;
 
 pthread_t render;
 
@@ -56,6 +62,9 @@ typedef struct dancer_t Dancer;
 typedef struct position_t Position;
 
 struct config_t {
+  int con_width;
+  int con_height;
+
   int guys_cnt;
   int girls_cnt;
   int dances_cnt;
@@ -89,6 +98,7 @@ int on_dance_position = 0;
 int dance_part_1 = 0;
 int dance_part_2 = 0;
 int end_of_dance = 0;
+int final = 0;
 
 void displayDancer(Dancer *dancer){
   pthread_mutex_lock(&output_mutex);
@@ -158,21 +168,20 @@ void calc_dance_positions(){
   else if(app_config.girls_cnt / 4.0 > 1.0 || app_config.girls_cnt / 4.0 == 2.0)
     rows_cnt = 2;
 
-  int vertical_margin = 24 / (rows_cnt + 1);
+  int vertical_margin = app_config.con_height / (rows_cnt + 1);
   int elements_in_last_row_cnt = (app_config.girls_cnt / 4.0 - (double)(rows_cnt - 1)) / 0.25;
 
-  horizontal_margin = 80 / 5;
+  horizontal_margin = app_config.con_width / 5;
 
   for(int row = 1; row <= rows_cnt; row++)
   {
     if(row == rows_cnt)
     {
-      horizontal_margin = 80 / (elements_in_last_row_cnt + 1);
+      horizontal_margin = app_config.con_width / (elements_in_last_row_cnt + 1);
     }
 
     for(int j = (4 * row) - 4, step = 0; j < 4 * row && j < app_config.girls_cnt; j++)
     {
-      Pos girl_pos;
       girls_array[j].dance_position.y = vertical_margin * row;
       step += horizontal_margin;
       girls_array[j].dance_position.x = step - 1;
@@ -187,21 +196,19 @@ void calc_dance_positions(){
 void calc_stand_positions()
 {
   int i, step;
-  int guys_margin = 80 / app_config.guys_cnt + 1;
-  int girls_margin = 80 / app_config.girls_cnt + 1;
+  int guys_margin = app_config.con_width / (app_config.guys_cnt + 1);
+  int girls_margin = app_config.con_width / (app_config.girls_cnt + 1);
 
-  for(i = 0, step = 0; i < app_config.guys_cnt; i++)
+  for(i = 0; i < app_config.guys_cnt; i++)
   {
     guys_array[i].stand_position.y = 16;
-    step += guys_margin;
-    guys_array[i].stand_position.x = step;
+    guys_array[i].stand_position.x = guys_margin * (i + 1);
   }
 
-  for(i = 0, step = 0; i < app_config.girls_cnt; i++)
+  for(i = 0; i < app_config.girls_cnt; i++)
   {
     girls_array[i].stand_position.y = 8;
-    step += girls_margin;
-    girls_array[i].stand_position.x = step;
+    girls_array[i].stand_position.x = girls_margin * (i + 1);
   }
 
 }
@@ -281,72 +288,79 @@ void guy_behavior(void *args){
 
   guy->position = guy->stand_position;
 
-  pthread_mutex_lock(&partner_choose_mutex);
-  int free_cnt = free_girls_count();
-
-  if(free_cnt)
+  for(int a = 0; a < app_config.dances_cnt; a++)
   {
-    setDancerColor(guy, KGRN);
-    usleep(1000000);
+    pthread_mutex_lock(&partner_choose_mutex);
+    int free_cnt = free_girls_count();
 
-    Dancer **girls = get_free_girls();
+    if(free_cnt)
+    {
+      setDancerColor(guy, KGRN);
+      usleep(1000000);
 
-    for(int i = 0; 1; i++){
-      if(i == free_cnt)
-        i = 0;
+      Dancer **girls = get_free_girls();
 
-      if(bind_partners(guy, girls[i])){
-        pairs_cnt++;
-        setDancerColor(girls[i], KGRN);
+      for(int i = 0; 1; i++){
+        if(i == free_cnt)
+          i = 0;
+
+        if(bind_partners(guy, girls[i])){
+          pairs_cnt++;
+          setDancerColor(girls[i], KGRN);
+          usleep(1000000);
+          setDancerColor(girls[i], KNRM);
+          break;
+        }
+        else{
+          setDancerColor(girls[i], KRED);
+        }
+
         usleep(1000000);
         setDancerColor(girls[i], KNRM);
-        break;
       }
-      else{
-        setDancerColor(girls[i], KRED);
-      }
-
-      usleep(1000000);
-      setDancerColor(girls[i], KNRM);
     }
+
+    setDancerColor(guy, KNRM);
+    pthread_mutex_unlock(&partner_choose_mutex);
+
+    mrevent_wait(&event_1);
+
+    if(guy->partner == NULL){
+      pos.y = 25;
+      pos.x = guy->position.x;
+      move(guy, pos, 100000);
+    }
+
+    if(guy->partner != NULL)
+    {
+      on_dance_position++;
+
+      mrevent_wait(&event_2);
+
+      move(guy, guy->dance_position, 100000);
+
+      dance_part_1++;
+
+      mrevent_wait(&event_3);
+
+      pos.y = guy->position.y;
+      pos.x = guy->position.x + 2;
+
+      move(guy, pos, 100000);
+
+      for(int i = 0; i < 3; i++)
+        dance_around_partner(guy, 1);
+
+      dance_part_2++;
+    }
+
+    mrevent_wait(&event_4);
+
+    move(guy, guy->stand_position, 100000);
   }
 
-  setDancerColor(guy, KNRM);
-  pthread_mutex_unlock(&partner_choose_mutex);
-
-  mrevent_wait(&event_1);
-
-  if(guy->partner == NULL){
-    pos.y = 25;
-    move(guy, pos, 100000);
-  }
-  else{
-    pos.y = 14;
-    move(guy, pos, 100000);
-  }
-
-  on_dance_position++;
-
-  mrevent_wait(&event_2);
-
-  move(guy, guy->dance_position, 100000);
-
-  dance_part_1++;
-
-  mrevent_wait(&event_3);
-
-  pos.y = guy->position.y;
-  pos.x = guy->position.x + 2;
-
-  move(guy, pos, 100000);
-
-  dance_around_partner(guy, 1);
-
-  dance_part_2++;
-
-  mrevent_wait(&event_2);
-
-  move(guy, guy->stand_position, 100000);
+  final++;
+  pthread_exit(&guy->thread);
 }
 
 void girl_behavior(void *args){
@@ -355,33 +369,51 @@ void girl_behavior(void *args){
 
   girl->position = girl->stand_position;
 
-  mrevent_wait(&event_1);
+  for(int a = 0; a < app_config.dances_cnt; a++)
+  {
+    mrevent_wait(&event_1);
 
-  pos.x = girl->partner->position.x;
-  pos.y = 12;
+    pos.x = girl->partner->position.x;
+    pos.y = 12;
 
-  move(girl, pos, 100000);
-  on_dance_position++;
+    move(girl, pos, 100000);
+    on_dance_position++;
 
-  mrevent_wait(&event_2);
+    mrevent_wait(&event_2);
 
-  move(girl, girl->dance_position, 100000);
+    move(girl, girl->dance_position, 100000);
 
-  dance_part_1++;
+    dance_part_1++;
 
-  mrevent_wait(&event_1);
+    mrevent_wait(&event_1);
 
-  pos.y = girl->position.y;
-  pos.x = girl->partner->position.x + 3;
+    pos.y = girl->position.y;
+    pos.x = girl->partner->position.x + 3;
 
-  move(girl, pos, 100000);
+    move(girl, pos, 100000);
 
-  dance_around_partner(girl, -1);
+    for(int i = 0; i < 3; i++)
+      dance_around_partner(girl, -1);
 
-  end_of_dance++;
+    end_of_dance++;
 
-  mrevent_wait(&event_2);
-  move(girl, girl->stand_position, 100000);
+    mrevent_wait(&event_4);
+    move(girl, girl->stand_position, 100000);
+  }
+
+  final++;
+  pthread_exit(&girl->thread);
+}
+
+void reset_partners()
+{
+  for(int i = 0; i < app_config.guys_cnt; i++){
+    guys_array[i].partner = NULL;
+  }
+
+  for(int i = 0; i < app_config.girls_cnt; i++){
+    girls_array[i].partner = NULL;
+  }
 }
 
 void run_dancers_threads()
@@ -395,21 +427,33 @@ void run_dancers_threads()
   }
 }
 
-void main(){
-
-  app_config.guys_cnt = 12;
-  app_config.girls_cnt = 12;
-  app_config.dances_cnt = 5;
-
+void main()
+{
   pthread_mutex_init(&output_mutex, NULL);
   pthread_mutex_init(&partner_choose_mutex, NULL);
 
   mrevent_init(&event_1);
   mrevent_init(&event_2);
   mrevent_init(&event_3);
+  mrevent_init(&event_4);
 
   char guys_dictionary[15] = "ABCDEFGHIJKLMNO";
   char girls_dictionary[15] = "abcdefghijklmno";
+
+  app_config.con_width = 80;
+  app_config.con_height = 24;
+
+  printf("Enter guys count (from 7 to 15): ");
+  scanf("%d", &app_config.guys_cnt);
+  printf("\n\n");
+
+  printf("Enter dances count: ");
+  scanf("%d", &app_config.dances_cnt);
+  printf("\n\n");
+
+  app_config.girls_cnt = app_config.guys_cnt - 3;
+
+
 
   guys_array = (Dancer*)malloc(app_config.guys_cnt * sizeof(Dancer));
   girls_array = (Dancer*)malloc(app_config.girls_cnt * sizeof(Dancer));
@@ -425,6 +469,7 @@ void main(){
   //Calculate and set optimal stand positions for dancers
   calc_stand_positions();
 
+  //Run all dancers threads
   run_dancers_threads();
 
   // Run render thread
@@ -434,6 +479,7 @@ void main(){
     if(pairs_cnt == app_config.girls_cnt){
       calc_dance_positions();
       pairs_cnt = 0;
+      mrevent_reset(&event_4);
       mrevent_trigger(&event_1);
     }
 
@@ -451,23 +497,36 @@ void main(){
       mrevent_trigger(&event_3);
     }
 
-    if(dance_part_2 == app_config.guys_cnt)
+    if(dance_part_2 == app_config.girls_cnt)
     {
       dance_part_2 = 0;
       mrevent_reset(&event_3);
       mrevent_trigger(&event_1);
+
     }
 
     if(end_of_dance == app_config.girls_cnt)
     {
       end_of_dance = 0;
-      mrevent_trigger(&event_2);
+
       mrevent_reset(&event_1);
+      reset_partners();
+      mrevent_trigger(&event_4);
+
     }
+
+    if(final == app_config.girls_cnt + app_config.guys_cnt)
+      break;
 
     usleep(1000000);
   }
 
+  pthread_cancel(render);
+
+  mrevent_destroy(&event_1);
+  mrevent_destroy(&event_2);
+  mrevent_destroy(&event_3);
+  mrevent_destroy(&event_4);
 
   getchar();
 }
